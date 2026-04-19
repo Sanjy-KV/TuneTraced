@@ -1,0 +1,1 @@
+# Add Python dependencies for music recognition here
