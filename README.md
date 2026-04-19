@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 🎵 TuneTrace — AI Music Recognition App
 A full-stack music recognition web app inspired by Shazam. Simply upload an audio file or record live audio — the app automatically identifies the song and displays full details in seconds.
 ✨ Features
@@ -25,8 +24,3 @@ Audio is captured or uploaded
 A 10-second snippet is extracted and sent to ACRCloud
 Song metadata is enriched via iTunes and MusicBrainz APIs in parallel
 Result is displayed instantly with album art and streaming links
-=======
-# Music Recognition
-
-Project structure for music recognition.
->>>>>>> d8a8398 (initial commit)
