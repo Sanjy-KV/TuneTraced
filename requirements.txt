@@ -1,1 +1,8 @@
-# Add Python dependencies for music recognition here
+flask
+flask-cors
+librosa
+numpy
+soundfile
+requests
+python-dotenv
+scipy
