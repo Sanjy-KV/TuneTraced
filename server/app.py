@@ -11,6 +11,9 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from dotenv import load_dotenv
 
+# Import from local module
+from audio_utils import load_audio
+
 # Load environment variables
 load_dotenv()
 
@@ -162,22 +165,6 @@ def fetch_musicbrainz(title, artist):
         return {}
 
 
-def load_audio(file_path):
-    """Load audio file using soundfile."""
-    try:
-        import soundfile as sf
-        data, samplerate = sf.read(file_path)
-        
-        # Convert to mono if stereo
-        if len(data.shape) > 1:
-            data = data.mean(axis=1)
-        
-        return data, samplerate
-    except Exception as e:
-        app.logger.error(f"[Audio Load ERROR] {e}")
-        raise
-
-
 @app.route("/recognize", methods=["POST"])
 def recognize():
     """Main recognition endpoint."""
@@ -199,7 +186,7 @@ def recognize():
         # Save uploaded file
         file.save(file_path)
         
-        # Load and process audio
+        # Load and process audio using audio_utils
         y, sr = load_audio(file_path)
         
         # Resample to 44100 Hz for ACRCloud
