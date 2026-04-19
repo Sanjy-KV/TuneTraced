@@ -9,7 +9,7 @@ import soundfile as sf
 from concurrent.futures import ThreadPoolExecutor
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from source.src.audio_utils import load_audio
+from audio_utils import load_audio
 from dotenv import load_dotenv
 
 load_dotenv()
