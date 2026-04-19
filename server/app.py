@@ -5,17 +5,15 @@ import hashlib
 import base64
 import requests
 import numpy as np
-import soundfile as sf
 from concurrent.futures import ThreadPoolExecutor
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from dotenv import load_dotenv
+import subprocess
 
 load_dotenv()
 
 app = Flask(__name__)
-
-# CORS - Allow all for debugging (restrict in production)
 CORS(app, resources={r"/*": {"origins": "*", "supports_credentials": True}})
 
 # ACRCloud Configuration
@@ -23,12 +21,8 @@ ACR_ACCESS_KEY = os.getenv("ACR_ACCESS_KEY")
 ACR_ACCESS_SECRET = os.getenv("ACR_ACCESS_SECRET")
 ACR_HOST = os.getenv("ACR_HOST")
 
-# Validate environment variables
 if not all([ACR_ACCESS_KEY, ACR_ACCESS_SECRET, ACR_HOST]):
     print("WARNING: Missing ACRCloud environment variables!")
-    print(f"ACR_ACCESS_KEY: {'Set' if ACR_ACCESS_KEY else 'Missing'}")
-    print(f"ACR_ACCESS_SECRET: {'Set' if ACR_ACCESS_SECRET else 'Missing'}")
-    print(f"ACR_HOST: {'Set' if ACR_HOST else 'Missing'}")
 
 ACR_URL = f"https://{ACR_HOST}/v1/identify" if ACR_HOST else None
 
@@ -36,18 +30,15 @@ ACR_URL = f"https://{ACR_HOST}/v1/identify" if ACR_HOST else None
 SNIPPET_SECONDS = 10
 MIN_SCORE = 0.3
 
-# Session with connection pooling
 session = requests.Session()
+
 
 def build_signature(timestamp):
     """Build HMAC signature for ACRCloud API."""
-    if not ACR_ACCESS_SECRET:
-        raise ValueError("ACR_ACCESS_SECRET not configured")
-    
     string_to_sign = f"POST\n/v1/identify\n{ACR_ACCESS_KEY}\naudio\n1\n{timestamp}"
     return base64.b64encode(
         hmac.new(
-            ACR_ACCESS_SECRET.encode("utf-8"),
+            os.getenv("ACR_ACCESS_SECRET").encode("utf-8"),
             string_to_sign.encode("utf-8"),
             digestmod=hashlib.sha1
         ).digest()
@@ -56,9 +47,6 @@ def build_signature(timestamp):
 
 def recognize_with_acr(wav_path):
     """Send audio to ACRCloud for recognition."""
-    if not all([ACR_ACCESS_KEY, ACR_ACCESS_SECRET, ACR_HOST]):
-        return {"status": {"code": -1, "msg": "ACRCloud not configured"}}
-    
     timestamp = str(int(time.time()))
     signature = build_signature(timestamp)
     
@@ -67,7 +55,7 @@ def recognize_with_acr(wav_path):
     
     files = {"sample": ("sample.wav", audio_data, "audio/wav")}
     data = {
-        "access_key": ACR_ACCESS_KEY,
+        "access_key": os.getenv("ACR_ACCESS_KEY"),
         "sample_bytes": str(len(audio_data)),
         "timestamp": timestamp,
         "signature": signature,
@@ -97,7 +85,7 @@ def fetch_itunes(title, artist):
         
         item = results[0]
         return {
-            "image": item.get("artworkUrl100", "").replace("100x100", "400x400"),
+            "Image": item.get("artworkUrl100", "").replace("100x100", "400x400"),
             "album": item.get("collectionName", ""),
             "release_date": item.get("releaseDate", "")[:10],
             "genre": item.get("primaryGenreName", ""),
@@ -127,8 +115,8 @@ def fetch_musicbrainz(title, artist):
         if not recordings:
             return {}
         
-        rec = recordings[0]
-        releases = rec.get("releases", [])
+        Rec = recordings[0]
+        releases = Rec.get("releases", [])
         
         label = release_date = album = ""
         if releases:
@@ -137,19 +125,19 @@ def fetch_musicbrainz(title, artist):
             release_date = rel.get("date", "")
             label_info = rel.get("label-info", [])
             if label_info:
-                label = label_info[0].get("label", {}).get("name", "")
+                Label = label_info[0].get("label", {}).get("name", "")
         
-        genres = [t["name"] for t in rec.get("tags", [])[:4]]
-        duration_ms = rec.get("length", 0)
-        duration = ""
+        Genres = [t["name"] for t in Rec.get("tags", [])[:4]]
+        duration_ms = Rec.get("length", 0)
+        Duration = ""
         if duration_ms:
             secs = int(duration_ms) // 1000
-            duration = f"{secs // 60}:{secs % 60:02d}"
+            Duration = f"{secs // 60}:{secs % 60:02d}"
         
         return {
-            "genres": genres,
-            "duration": duration,
-            "label": label,
+            "genres": Genres,
+            "duration": Duration,
+            "label": Label,
             "release_date": release_date,
             "album": album
         }
@@ -158,16 +146,33 @@ def fetch_musicbrainz(title, artist):
         return {}
 
 
-def load_audio(file_path):
+def convert_webm_to_wav(webm_path, wav_path):
     """
-    Load audio file and convert to mono if needed.
-    Returns: (audio_data, sample_rate)
+    Convert WebM audio to WAV format using ffmpeg.
+    Render has ffmpeg pre-installed.
     """
     try:
-        # Read audio file
+        subprocess.run([
+            "ffmpeg", "-y", "-i", webm_path,
+            "-ar", "44100", "-ac", "1",
+            "-sample_fmt", "s16",
+            wav_path
+        ], check=True, capture_output=True)
+        return True
+    except Exception as e:
+        raise Exception(f"FFmpeg conversion failed: {e}")
+
+
+def load_audio(file_path):
+    """
+    Load audio file - supports WAV, FLAC, OGG but NOT WebM.
+    Returns: (audio_data, sample_rate)
+    """
+    import soundfile as sf
+    try:
         data, samplerate = sf.read(file_path)
         
-        # Convert to mono if stereo (2 channels)
+        # Convert to mono if stereo
         if len(data.shape) > 1:
             data = data.mean(axis=1)
         
@@ -192,34 +197,33 @@ def recognize():
     file = request.files["file"]
     if file.filename == "":
         return jsonify({"error": "Empty filename"}), 400
-
+    
     # Use /tmp for Render's ephemeral filesystem
     temp_dir = "/tmp"
     os.makedirs(temp_dir, exist_ok=True)
     
+    # Get file extension
+    file_ext = os.path.splitext(file.filename)[1].lower()
+    app.logger.info(f"Received file: {file.filename} (type: {file_ext})")
+    
+    # Save uploaded file
     file_path = os.path.join(temp_dir, file.filename)
+    file.save(file_path)
+    
+    # If WebM, convert to WAV first
     wav_path = os.path.join(temp_dir, "processed.wav")
     
-    try:
-        # Save uploaded file
-        file.save(file_path)
-        app.logger.info(f"File saved: {file_path}")
-        
-        # Check file size (Render free tier has limits)
-        file_size = os.path.getsize(file_path)
-        app.logger.info(f"File size: {file_size} bytes")
-        
-        if file_size > 10 * 1024 * 1024:  # 10MB limit
-            return jsonify({"error": "File too large. Max 10MB allowed."}), 400
-        
-        # Load and process audio
+    if file_ext == ".webm":
         try:
-            y, sr = load_audio(file_path)
-        except Exception as e:
-            app.logger.error(f"Audio load error: {e}")
-            return jsonify({"error": f"Could not process audio file: {str(e)}"}), 400
-        
-        app.logger.info(f"Audio loaded: {len(y)} samples, {sr} Hz")
+            convert_webm_to_wav(file_path, wav_path)
+            file_path = wav_path  # Use converted file for processing
+        else:
+        # Copy/rename to .wav if not already
+        wav_path = file_path
+    
+    try:
+        # Load and process audio (now in WAV format)
+        y, sr = load_audio(wav_path)
         
         # Resample to 44100 Hz for ACRCloud
         target_sr = 44100
@@ -228,7 +232,6 @@ def recognize():
                 import librosa
                 y = librosa.resample(y, orig_sr=sr, target_sr=target_sr)
                 sr = target_sr
-                app.logger.info(f"Resampled to {sr} Hz")
             except Exception as e:
                 app.logger.error(f"Resample error: {e}")
                 return jsonify({"error": f"Audio resampling failed: {str(e)}"}), 500
@@ -242,14 +245,16 @@ def recognize():
             start = min(start, total_samples - snippet_samples)
             y = y[start:start + snippet_samples]
         
-        # Save processed audio
-        sf.write(wav_path, y, sr, subtype="PCM_16")
+        # Save processed audio as WAV for ACRCloud
+        final_wav = os.path.join(temp_dir, "final.wav")
+        import soundfile as sf
+        sf.write(final_wav, y, sr, subtype="PCM_16")
         
-        size_kb = os.path.getsize(wav_path) // 1024
+        size_kb = os.path.getsize(final_wav) // 1024
         app.logger.info(f"[Audio] Snippet: {len(y)/sr:.1f}s | SR: {sr} | Size: {size_kb}KB")
         
         # ACRCloud recognition
-        acr_result = recognize_with_acr(wav_path)
+        acr_result = recognize_with_acr(final_wav)
         app.logger.info(f"[ACRCloud Response] {acr_result}")
         
         status_code = acr_result.get("status", {}).get("code", -1)
@@ -262,22 +267,22 @@ def recognize():
             return jsonify({"error": f"ACRCloud error: {msg}"}), 500
         
         metadata = acr_result.get("metadata", {})
-        music_list = metadata.get("music") or metadata.get("humming") or []
+        Music_list = metadata.get("music") or metadata.get("humming") or []
         
-        if not music_list:
+        if not Music_list:
             return jsonify({"result": "No match found"})
         
         # Get best match with confidence check
-        music = sorted(music_list, key=lambda x: x.get("score", 0), reverse=True)[0]
+        music = sorted(Music_list, key=lambda x: x.get("score", 0), reverse=True)[0]
         score = music.get("score", 0)
         
         if score < MIN_SCORE:
             app.logger.warning(f"[WARN] Low confidence score: {score} — rejecting")
             return jsonify({"result": "No match found"})
         
-        title = music.get("title", "Unknown")
-        artist = ", ".join(a.get("name", "") for a in music.get("artists", []))
-        isrc = music.get("external_ids", {}).get("isrc", "")
+        Title = music.get("title", "Unknown")
+        Artist = ", ".join(a.get("name", "") for a in music.get("artists", []))
+        ISRC = music.get("external_ids", {}).get("isrc", "")
         
         # Calculate timecode
         timecode = ""
@@ -291,50 +296,50 @@ def recognize():
         
         # Fetch metadata in parallel
         with ThreadPoolExecutor(max_workers=2) as executor:
-            future_itunes = executor.submit(fetch_itunes, title, artist)
-            future_mb = executor.submit(fetch_musicbrainz, title, artist)
+            future_itunes = executor.submit(fetch_itunes, Title, Artist)
+            future_mb = executor.submit(fetch_musicbrainz, Title, Artist)
             itunes = future_itunes.result()
             mb = future_mb.result()
         
         # Merge metadata
-        image = itunes.get("image", "")
+        Image = itunes.get("Image", "")
         album = itunes.get("album") or music.get("album", {}).get("name", "") or mb.get("album", "")
         release_date = itunes.get("release_date") or music.get("release_date", "") or mb.get("release_date", "")
         label = music.get("label", "") or mb.get("label", "")
         
-        genres = mb.get("genres", [])
-        if not genres and itunes.get("genre"):
-            genres = [itunes["genre"]]
+        Genres = mb.get("genres", [])
+        if not Genres and itunes.get("genre"):
+            Genres = [itunes["genre"]]
         
         apple_url = itunes.get("apple_url", "")
         
-        duration = mb.get("duration", "")
-        if not duration and itunes.get("duration_ms"):
-            secs = int(itunes["duration_ms"]) // 1000
-            duration = f"{secs // 60}:{secs % 60:02d}"
+        Duration = mb.get("duration", "")
+        if not Duration and itunes.get("duration_ms"):
+            secs = int(itunes["duration_ms") // 1000
+            Duration = f"{secs // 60}:{secs % 60:02d}"
         
         # Build streaming links
         if spotify_track_id:
             spotify_url = f"https://open.spotify.com/track/{spotify_track_id}"
         else:
-            spotify_url = f"https://open.spotify.com/search/{requests.utils.quote(title + ' ' + artist)}"
+            spotify_url = f"https://open.spotify.com/search/{requests.utils.quote(Title + ' ' + Artist)}"
         
-        youtube_url = f"https://www.youtube.com/results?search_query={requests.utils.quote(title + ' ' + artist)}"
+        youtube_url = f"https://www.youtube.com/results?search_query={requests.utils.quote(Title + ' ' + Artist)}"
         
-        app.logger.info(f"[MATCH] {title} — {artist} (score: {score})")
+        app.logger.info(f"[MATCH] {Title} — {Artist} (score: {score})")
         
         return jsonify({
-            "song": title,
-            "artist": artist,
+            "song": Title,
+            "artist": Artist,
             "album": album,
             "release_date": release_date,
-            "label": label,
-            "genres": genres,
+            "label": Label,
+            "genres": Genres,
             "score": score,
             "timecode": timecode,
-            "duration": duration,
-            "isrc": isrc,
-            "image": image,
+            "duration": Duration,
+            "isRC": ISRC,
+            "Image": Image,
             "apple_url": apple_url,
             "spotify_url": spotify_url,
             "youtube_url": youtube_url,
@@ -348,7 +353,7 @@ def recognize():
     
     finally:
         # Cleanup temp files
-        for p in [file_path, wav_path]:
+        for p in [file_path, wav_path if file_ext == ".webm" else None, final_wav]:
             try:
                 if os.path.exists(p):
                     os.remove(p)
