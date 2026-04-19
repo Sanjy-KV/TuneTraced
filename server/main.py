@@ -1,6 +1,6 @@
-from source.src.audio_utils import load_audio, generate_spectrogram
-from source.src.fingerprint import find_peaks, generate_hashes
-from source.src.database import store_song, get_matches
+from audio_utils import load_audio, generate_spectrogram
+from fingerprint import find_peaks, generate_hashes
+from database import store_song, get_matches
 
 # 🎵 SONG 1 (store in DB)
 y1, sr1 = load_audio("../data/song.mp3")
