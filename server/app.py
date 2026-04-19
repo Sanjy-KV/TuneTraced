@@ -11,31 +11,26 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from dotenv import load_dotenv
 
-# Import from local module
-from audio_utils import load_audio
-
-# Load environment variables
 load_dotenv()
 
 app = Flask(__name__)
 
-# Production CORS - configure for your frontend domain
-CORS(app, resources={
-    r"/*": {
-        "origins": os.getenv("ALLOWED_ORIGINS", "*").split(","),
-        "supports_credentials": True
-    }
-})
+# CORS - Allow all for debugging (restrict in production)
+CORS(app, resources={r"/*": {"origins": "*", "supports_credentials": True}})
 
 # ACRCloud Configuration
 ACR_ACCESS_KEY = os.getenv("ACR_ACCESS_KEY")
 ACR_ACCESS_SECRET = os.getenv("ACR_ACCESS_SECRET")
 ACR_HOST = os.getenv("ACR_HOST")
-ACR_URL = f"https://{ACR_HOST}/v1/identify" if ACR_HOST else None
 
-# Validate required env vars
+# Validate environment variables
 if not all([ACR_ACCESS_KEY, ACR_ACCESS_SECRET, ACR_HOST]):
-    raise ValueError("Missing required ACRCloud environment variables")
+    print("WARNING: Missing ACRCloud environment variables!")
+    print(f"ACR_ACCESS_KEY: {'Set' if ACR_ACCESS_KEY else 'Missing'}")
+    print(f"ACR_ACCESS_SECRET: {'Set' if ACR_ACCESS_SECRET else 'Missing'}")
+    print(f"ACR_HOST: {'Set' if ACR_HOST else 'Missing'}")
+
+ACR_URL = f"https://{ACR_HOST}/v1/identify" if ACR_HOST else None
 
 # Constants
 SNIPPET_SECONDS = 10
@@ -43,17 +38,12 @@ MIN_SCORE = 0.3
 
 # Session with connection pooling
 session = requests.Session()
-adapter = requests.adapters.HTTPAdapter(
-    pool_connections=10,
-    pool_maxsize=20,
-    max_retries=3
-)
-session.mount('https://', adapter)
-session.mount('http://', adapter)
-
 
 def build_signature(timestamp):
     """Build HMAC signature for ACRCloud API."""
+    if not ACR_ACCESS_SECRET:
+        raise ValueError("ACR_ACCESS_SECRET not configured")
+    
     string_to_sign = f"POST\n/v1/identify\n{ACR_ACCESS_KEY}\naudio\n1\n{timestamp}"
     return base64.b64encode(
         hmac.new(
@@ -66,6 +56,9 @@ def build_signature(timestamp):
 
 def recognize_with_acr(wav_path):
     """Send audio to ACRCloud for recognition."""
+    if not all([ACR_ACCESS_KEY, ACR_ACCESS_SECRET, ACR_HOST]):
+        return {"status": {"code": -1, "msg": "ACRCloud not configured"}}
+    
     timestamp = str(int(time.time()))
     signature = build_signature(timestamp)
     
@@ -165,9 +158,34 @@ def fetch_musicbrainz(title, artist):
         return {}
 
 
+def load_audio(file_path):
+    """
+    Load audio file and convert to mono if needed.
+    Returns: (audio_data, sample_rate)
+    """
+    try:
+        # Read audio file
+        data, samplerate = sf.read(file_path)
+        
+        # Convert to mono if stereo (2 channels)
+        if len(data.shape) > 1:
+            data = data.mean(axis=1)
+        
+        return data, samplerate
+    
+    except Exception as e:
+        raise Exception(f"Failed to load audio: {str(e)}")
+
+
 @app.route("/recognize", methods=["POST"])
 def recognize():
     """Main recognition endpoint."""
+    app.logger.info("Recognize endpoint called")
+    
+    # Check if ACRCloud is configured
+    if not all([ACR_ACCESS_KEY, ACR_ACCESS_SECRET, ACR_HOST]):
+        return jsonify({"error": "Server configuration error: ACRCloud not configured"}), 500
+    
     if "file" not in request.files:
         return jsonify({"error": "No file uploaded"}), 400
     
@@ -176,7 +194,7 @@ def recognize():
         return jsonify({"error": "Empty filename"}), 400
 
     # Use /tmp for Render's ephemeral filesystem
-    temp_dir = "/tmp" if os.path.exists("/tmp") else "temp"
+    temp_dir = "/tmp"
     os.makedirs(temp_dir, exist_ok=True)
     
     file_path = os.path.join(temp_dir, file.filename)
@@ -185,16 +203,35 @@ def recognize():
     try:
         # Save uploaded file
         file.save(file_path)
+        app.logger.info(f"File saved: {file_path}")
         
-        # Load and process audio using audio_utils
-        y, sr = load_audio(file_path)
+        # Check file size (Render free tier has limits)
+        file_size = os.path.getsize(file_path)
+        app.logger.info(f"File size: {file_size} bytes")
+        
+        if file_size > 10 * 1024 * 1024:  # 10MB limit
+            return jsonify({"error": "File too large. Max 10MB allowed."}), 400
+        
+        # Load and process audio
+        try:
+            y, sr = load_audio(file_path)
+        except Exception as e:
+            app.logger.error(f"Audio load error: {e}")
+            return jsonify({"error": f"Could not process audio file: {str(e)}"}), 400
+        
+        app.logger.info(f"Audio loaded: {len(y)} samples, {sr} Hz")
         
         # Resample to 44100 Hz for ACRCloud
         target_sr = 44100
         if sr != target_sr:
-            import librosa
-            y = librosa.resample(y, orig_sr=sr, target_sr=target_sr)
-            sr = target_sr
+            try:
+                import librosa
+                y = librosa.resample(y, orig_sr=sr, target_sr=target_sr)
+                sr = target_sr
+                app.logger.info(f"Resampled to {sr} Hz")
+            except Exception as e:
+                app.logger.error(f"Resample error: {e}")
+                return jsonify({"error": f"Audio resampling failed: {str(e)}"}), 500
         
         # Extract 10s snippet from 20% into the song
         total_samples = len(y)
@@ -321,10 +358,11 @@ def recognize():
 
 @app.route("/health", methods=["GET"])
 def health_check():
-    """Health check endpoint for Render."""
+    """Health check endpoint."""
     return jsonify({
         "status": "healthy",
         "timestamp": int(time.time()),
+        "acr_configured": all([ACR_ACCESS_KEY, ACR_ACCESS_SECRET, ACR_HOST]),
         "acr_host": ACR_HOST
     })
 
@@ -342,5 +380,4 @@ def home():
 
 
 if __name__ == "__main__":
-    # Development only - Render uses gunicorn
     app.run(debug=False, host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
