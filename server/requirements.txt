@@ -1,8 +1,8 @@
-Flask==3.0.0
-flask-cors==4.0.0
-gunicorn==21.2.0
-requests==2.31.0
-numpy==1.26.0
-soundfile==0.12.1
-librosa==0.10.1
-python-dotenv==1.0.0
+Flask
+flask-cors
+gunicorn
+requests
+numpy
+soundfile
+librosad
+python-dotenv
