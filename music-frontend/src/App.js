@@ -8,7 +8,6 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [recording, setRecording] = useState(false);
   const [mediaRecorder, setMediaRecorder] = useState(null);
-  const [audioBlob, setAudioBlob] = useState(null);
   const [error, setError] = useState(null);
 
   // Apply theme to body
@@ -73,7 +72,6 @@ function App() {
 
         recorder.onstop = () => {
           const blob = new Blob(chunks, { type: mimeType });
-          setAudioBlob(blob);
 
           // Send to backend immediately
           const formData = new FormData();
