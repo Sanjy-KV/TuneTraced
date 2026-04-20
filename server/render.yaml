@@ -1,6 +1,13 @@
 services:
   - type: web
-    name: tunetraced
-    env: python
-    buildCommand: apt-get update && apt-get install -y ffmpeg && pip install -r requirements.txt
-    startCommand: gunicorn app:app
+    name: musicfinder-backend
+    runtime: python
+    buildCommand: apt-get install -y ffmpeg && pip install -r requirements.txt
+    startCommand: python app.py
+    envVars:
+      - key: ACR_ACCESS_KEY
+        sync: false
+      - key: ACR_ACCESS_SECRET
+        sync: false
+      - key: ACR_HOST
+        sync: false
