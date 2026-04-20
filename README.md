@@ -1,3 +1,5 @@
+
+
 🎵 MusicFinder — AI Music Recognition App
 A full-stack music recognition web app inspired by Shazam. Simply upload an audio file or record live audio — the app automatically identifies the song and displays full details in seconds.
 ✨ Features
