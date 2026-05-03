@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import "./App.css";
 
 function App() {
@@ -8,9 +8,13 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [recording, setRecording] = useState(false);
   const [mediaRecorder, setMediaRecorder] = useState(null);
+  const [audioBlob, setAudioBlob] = useState(null);
   const [error, setError] = useState(null);
 
-  // Apply theme to body
+  // Refs to track mic stream and cancelled state
+  const streamRef    = useRef(null);
+  const cancelledRef = useRef(false);
+
   useEffect(() => {
     document.body.className = theme;
   }, [theme]);
@@ -26,7 +30,7 @@ function App() {
     setError(null);
     setResult(null);
     try {
-      const response = await fetch("https://tunetraced.onrender.com/recognize", {
+      const response = await fetch("http://127.0.0.1:5000/recognize", {
         method: "POST",
         body: formData,
       });
@@ -49,10 +53,12 @@ function App() {
     await sendToBackend(formData);
   };
 
-  // Shazam-style: records 15s, sends to backend, auto-shows result
   const startRecording = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current    = stream;
+      cancelledRef.current = false;
+
       const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
         ? "audio/webm;codecs=opus"
         : "audio/webm";
@@ -63,6 +69,11 @@ function App() {
       setRecording(true);
 
       const tryRecognize = () => {
+        // Stop retrying if user cancelled
+        if (cancelledRef.current) return;
+        // Stop retrying if mic is no longer active
+        if (!streamRef.current || !streamRef.current.active) return;
+
         const recorder = new MediaRecorder(stream, { mimeType });
         let chunks = [];
 
@@ -72,44 +83,62 @@ function App() {
 
         recorder.onstop = () => {
           const blob = new Blob(chunks, { type: mimeType });
+          setAudioBlob(blob);
 
-          // Send to backend immediately
+          // If user cancelled before analysis started, don't send
+          if (cancelledRef.current) {
+            setLoading(false);
+            return;
+          }
+
           const formData = new FormData();
           formData.append("file", blob, "recording.webm");
           setLoading(true);
 
-          fetch("https://tunetraced.onrender.com/recognize", { method: "POST", body: formData })
+          fetch("http://127.0.0.1:5000/recognize", { method: "POST", body: formData })
             .then((res) => res.json())
             .then((data) => {
-              if (data.result === "No match found" || data.error) {
-                // No match yet — try again with next 15s chunk
+              // Ignore result if user cancelled
+              if (cancelledRef.current) {
                 setLoading(false);
-                // Only retry if stream is still active
-                if (stream.active) {
+                return;
+              }
+
+              if (data.result === "No match found" || data.error) {
+                setLoading(false);
+                // Retry only if mic still active and not cancelled
+                if (!cancelledRef.current && streamRef.current && streamRef.current.active) {
                   tryRecognize();
                 } else {
                   setRecording(false);
-                  setResult(data);
+                  if (data.error) setError(data.error);
                 }
               } else {
-                // Got a match! Stop everything and show result
-                stream.getTracks().forEach((t) => t.stop());
+                // Match found — stop mic and show result
+                if (streamRef.current) {
+                  streamRef.current.getTracks().forEach((t) => t.stop());
+                  streamRef.current = null;
+                }
                 setRecording(false);
                 setLoading(false);
                 setResult(data);
               }
             })
             .catch((err) => {
-              stream.getTracks().forEach((t) => t.stop());
+              if (streamRef.current) {
+                streamRef.current.getTracks().forEach((t) => t.stop());
+                streamRef.current = null;
+              }
               setRecording(false);
               setLoading(false);
-              setError(err.message);
+              if (!cancelledRef.current) setError(err.message);
             });
         };
 
-        // Record for 15 seconds then auto-send
         recorder.start();
         setMediaRecorder(recorder);
+
+        // Auto-send after 10 seconds
         setTimeout(() => {
           if (recorder.state === "recording") recorder.stop();
         }, 10000);
@@ -122,12 +151,35 @@ function App() {
     }
   };
 
+  // ── STOP = stop mic only, analysis of sent audio continues ──
   const stopRecording = () => {
+    // Stop the mic stream
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((t) => t.stop());
+      streamRef.current = null;
+    }
+    // Stop the recorder — triggers onstop → sends current chunk
+    if (mediaRecorder && mediaRecorder.state === "recording") {
+      mediaRecorder.stop();
+    }
+    setRecording(false);
+    // NOTE: loading stays true if analysis is still running
+  };
+
+  // ── CANCEL = stop everything including analysis ──
+  const cancelAll = () => {
+    cancelledRef.current = true;
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((t) => t.stop());
+      streamRef.current = null;
+    }
     if (mediaRecorder && mediaRecorder.state === "recording") {
       mediaRecorder.stop();
     }
     setRecording(false);
     setLoading(false);
+    setResult(null);
+    setError(null);
   };
 
   const confidencePct = result?.score
@@ -164,9 +216,7 @@ function App() {
         {/* Header */}
         <div className="app-header">
           <div className="logo-ring">🎵</div>
-          <h1 className="app-title">
-            Music<span>Finder</span>
-          </h1>
+          <h1 className="app-title">Music<span>Finder</span></h1>
           <p className="app-subtitle">Identify any song in seconds</p>
         </div>
 
@@ -196,6 +246,8 @@ function App() {
         <div className="panel">
           <div className="panel-label">Record Audio</div>
           <div className="record-controls">
+
+            {/* Start button */}
             <button
               className={`btn-record ${recording ? "recording-active" : ""}`}
               onClick={startRecording}
@@ -203,15 +255,31 @@ function App() {
             >
               🎤 Start
             </button>
+
+            {/* Stop mic — analysis continues */}
             <button
               className="btn-record"
               onClick={stopRecording}
               disabled={!recording}
+              title="Stop microphone (analysis continues)"
             >
-              ⏹ Stop
+              ⏹ Stop Mic
             </button>
+
+            {/* Cancel all — stops everything */}
+            <button
+              className="btn-record"
+              onClick={cancelAll}
+              disabled={!recording && !loading}
+              title="Cancel everything"
+              style={{ color: "var(--danger)", borderColor: "var(--danger)" }}
+            >
+              ✕ Cancel
+            </button>
+
           </div>
 
+          {/* Recording animation */}
           {recording && (
             <div className="recording-indicator">
               <div className="mic-anim">
@@ -222,25 +290,24 @@ function App() {
                   <div key={i} className="wave-bar"></div>
                 ))}
               </div>
-              <span className="rec-label">● Recording — auto identifies every 15s</span>
+              <span className="rec-label">● Listening — identifies every 10s</span>
             </div>
           )}
 
+          {/* Analysing after mic stopped */}
           {loading && !recording && (
-            <div className="status-ready" style={{color: "var(--accent)"}}>
-              🔍 Analyzing audio...
+            <div className="status-ready" style={{ color: "var(--accent)" }}>
+              🔍 Analyzing audio... (click Cancel to stop)
             </div>
           )}
         </div>
 
         {/* Error */}
         {error && (
-          <div className="error-box">
-            ⚠️ {error}
-          </div>
+          <div className="error-box">⚠️ {error}</div>
         )}
 
-        {/* Loading */}
+        {/* Loading spinner */}
         {loading && (
           <div className="loading-panel">
             <div className="spinner-wrap">
@@ -262,7 +329,6 @@ function App() {
               </div>
             ) : (
               <>
-                {/* Banner */}
                 <div className="result-banner">
                   {result.image ? (
                     <img
@@ -286,7 +352,6 @@ function App() {
                   )}
                 </div>
 
-                {/* Details */}
                 <div className="details-section">
                   <div className="details-grid">
                     {result.release_date && (
@@ -334,28 +399,21 @@ function App() {
                   </div>
                 </div>
 
-                {/* Streaming links */}
                 {(result.spotify_url || result.youtube_url || result.apple_url) && (
                   <div className="stream-section">
                     <div className="stream-label">Listen on</div>
                     <div className="stream-links">
                       {result.spotify_url && (
                         <a href={result.spotify_url} target="_blank" rel="noreferrer"
-                          className="stream-btn spotify">
-                          🎧 Spotify
-                        </a>
+                          className="stream-btn spotify">🎧 Spotify</a>
                       )}
                       {result.youtube_url && (
                         <a href={result.youtube_url} target="_blank" rel="noreferrer"
-                          className="stream-btn youtube">
-                          ▶ YouTube
-                        </a>
+                          className="stream-btn youtube">▶ YouTube</a>
                       )}
                       {result.apple_url && (
                         <a href={result.apple_url} target="_blank" rel="noreferrer"
-                          className="stream-btn apple">
-                          🍎 Apple Music
-                        </a>
+                          className="stream-btn apple">🍎 Apple Music</a>
                       )}
                     </div>
                   </div>

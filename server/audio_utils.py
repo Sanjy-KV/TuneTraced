@@ -5,17 +5,12 @@ import os
 import shutil
 
 def get_ffmpeg_path():
-    """
-    Finds ffmpeg automatically:
-    - On Render/Linux: uses system ffmpeg
-    - On Windows: checks common install locations
-    """
-    # First check if ffmpeg is in system PATH (works on Render/Linux)
+    # Works on Render/Linux automatically
     ffmpeg = shutil.which("ffmpeg")
     if ffmpeg:
         return ffmpeg
 
-    # Windows fallback paths
+    # Windows fallback
     windows_paths = [
         r"C:\Users\Admin\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-8.1-full_build\bin\ffmpeg.exe",
         r"C:\ffmpeg\bin\ffmpeg.exe",
@@ -29,7 +24,6 @@ def get_ffmpeg_path():
 
 
 def convert_to_wav(input_path):
-    """Convert any audio format to wav using ffmpeg"""
     output_path = input_path.rsplit(".", 1)[0] + "_converted.wav"
     ffmpeg = get_ffmpeg_path()
     try:
@@ -37,7 +31,7 @@ def convert_to_wav(input_path):
             ffmpeg, "-y",
             "-i", input_path,
             "-ac", "1",
-            "-ar", "44100",
+            "-ar", "44100",   # 44100 Hz — ACRCloud needs high quality
             "-sample_fmt", "s16",
             output_path
         ], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -50,7 +44,6 @@ def load_audio(file_path):
     ext = os.path.splitext(file_path)[1].lower()
     converted_path = None
 
-    # Convert non-standard formats (webm from browser recording, etc.)
     if ext not in [".wav", ".mp3", ".flac", ".ogg"]:
         converted_path = convert_to_wav(file_path)
         load_path = converted_path
