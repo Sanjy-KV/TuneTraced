@@ -8,7 +8,6 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [recording, setRecording] = useState(false);
   const [mediaRecorder, setMediaRecorder] = useState(null);
-  const [audioBlob, setAudioBlob] = useState(null);
   const [error, setError] = useState(null);
 
   // Refs to track mic stream and cancelled state
@@ -83,7 +82,6 @@ function App() {
 
         recorder.onstop = () => {
           const blob = new Blob(chunks, { type: mimeType });
-          setAudioBlob(blob);
 
           // If user cancelled before analysis started, don't send
           if (cancelledRef.current) {
