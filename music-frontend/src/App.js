@@ -30,7 +30,7 @@ function App() {
     setError(null);
     setResult(null);
     try {
-      const response = await fetch("http://127.0.0.1:5000/recognize", {
+      const response = await fetch("https://tunetraced-2.onrender.com/recognize", {
         method: "POST",
         body: formData,
       });
@@ -95,7 +95,7 @@ function App() {
           formData.append("file", blob, "recording.webm");
           setLoading(true);
 
-          fetch("http://127.0.0.1:5000/recognize", { method: "POST", body: formData })
+          fetch("https://tunetraced-2.onrender.com/recognize", { method: "POST", body: formData })
             .then((res) => res.json())
             .then((data) => {
               // Ignore result if user cancelled
